@@ -162,6 +162,20 @@ func (m *mqttPubSub) Publish(req *pubsub.PublishRequest) error {
 	return nil
 }
 
+func (m *mqttPubSub) subscribeHandler(req pubsub.SubscribeRequest, handler func(msg *pubsub.NewMessage) error) error {
+	registerHandler := func(client mqtt.Client, mqttMsg mqtt.Message) {
+		msg := &pubsub.NewMessage{Topic: mqttMsg.Topic(), Data: mqttMsg.Payload()}
+		if err := handler(msg); err != nil {
+			m.consumer.Disconnect(0)
+		}
+	}
+	token := m.consumer.SubscribeMultiple(m.topics, registerHandler)
+	if err := token.Error(); err != nil {
+		return err
+	}
+	return nil
+}
+
 // Subscribe to the mqtt pub sub topic.
 func (m *mqttPubSub) Subscribe(req pubsub.SubscribeRequest, handler func(msg *pubsub.NewMessage) error) error {
 	m.topics[req.Topic] = m.metadata.qos
@@ -181,23 +195,32 @@ func (m *mqttPubSub) Subscribe(req pubsub.SubscribeRequest, handler func(msg *pu
 	}
 	m.consumer = c
 
+	err = m.subscribeHandler(req, handler)
+	if err != nil {
+		return fmt.Errorf("mqtt error from subscribe: %v", err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 
-	go func() {
-		token := m.consumer.SubscribeMultiple(
-			m.topics,
-			func(client mqtt.Client, mqttMsg mqtt.Message) {
-				handler(&pubsub.NewMessage{Topic: req.Topic, Data: mqttMsg.Payload()})
-			})
-		if err := token.Error(); err != nil {
-			m.logger.Errorf("mqtt error from subscribe: %v", err)
+	go func(mps *mqttPubSub) {
+		timer := time.NewTicker(defaultWait)
+		defer timer.Stop()
+		for {
+			select {
+			case <-timer.C:
+				if !mps.consumer.IsConnected() {
+					mps.logger.Debug("connecting for subscription")
+					mps.consumer, _ = mps.connect(consumerClientID)
+					mps.subscribeHandler(req, handler)
+				}
+			default:
+				if ctx.Err() != nil {
+					return
+				}
+			}
 		}
-
-		if ctx.Err() != nil {
-			return
-		}
-	}()
+	}(m)
 
 	return nil
 }
