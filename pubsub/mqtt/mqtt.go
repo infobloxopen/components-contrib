@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net/url"
@@ -176,6 +177,21 @@ func (m *mqttPubSub) subscribeHandler(req pubsub.SubscribeRequest, handler func(
 	return nil
 }
 
+// isHandlerReady checks if the subscribe grpc handler is ready.
+func (m *mqttPubSub) isHandlerReady(handler func(msg *pubsub.NewMessage) error) bool {
+	sampleCloudEvent := pubsub.NewCloudEventsEnvelope("validate", "", "", "", "", "", nil)
+	sampleData, _ := json.Marshal(sampleCloudEvent)
+	msg := &pubsub.NewMessage{
+		Data:  sampleData,
+		Topic: "",
+	}
+	err := handler(msg)
+	if err != nil {
+		return false
+	}
+	return true
+}
+
 // Subscribe to the mqtt pub sub topic.
 func (m *mqttPubSub) Subscribe(req pubsub.SubscribeRequest, handler func(msg *pubsub.NewMessage) error) error {
 	m.topics[req.Topic] = m.metadata.qos
@@ -195,32 +211,32 @@ func (m *mqttPubSub) Subscribe(req pubsub.SubscribeRequest, handler func(msg *pu
 	}
 	m.consumer = c
 
-	err = m.subscribeHandler(req, handler)
-	if err != nil {
-		return fmt.Errorf("mqtt error from subscribe: %v", err)
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 
-	go func(mps *mqttPubSub) {
+	go func(mps *mqttPubSub, handler func(msg *pubsub.NewMessage) error) {
 		timer := time.NewTicker(defaultWait)
 		defer timer.Stop()
 		for {
 			select {
 			case <-timer.C:
-				if !mps.consumer.IsConnected() {
+				if !mps.consumer.IsConnected() && mps.isHandlerReady(handler) {
 					mps.logger.Debug("connecting for subscription")
-					mps.consumer, _ = mps.connect(consumerClientID)
-					mps.subscribeHandler(req, handler)
+					mps.consumer, err = mps.connect(consumerClientID)
+					if err != nil {
+						continue
+					}
+					if err = mps.subscribeHandler(req, handler); err != nil {
+						mps.logger.Debugf("error creating subscribe handler: %v", err)
+						mps.consumer.Disconnect(0)
+						continue
+					}
 				}
-			default:
-				if ctx.Err() != nil {
-					return
-				}
+			case <- ctx.Done():
+				return
 			}
 		}
-	}(m)
+	}(m, handler)
 
 	return nil
 }
