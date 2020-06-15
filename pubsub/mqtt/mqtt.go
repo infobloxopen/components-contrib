@@ -6,6 +6,7 @@
 package mqtt
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -146,6 +147,21 @@ func (m *mqttPubSub) subscribeHandler(req pubsub.SubscribeRequest, handler func(
 	return nil
 }
 
+// isHandlerReady checks if the subscribe grpc handler is ready.
+func (m *mqttPubSub) isHandlerReady(handler func(msg *pubsub.NewMessage) error) bool {
+	sampleCloudEvent := pubsub.NewCloudEventsEnvelope("validate", "", "", "", nil)
+	sampleData, _ := json.Marshal(sampleCloudEvent)
+	msg := &pubsub.NewMessage{
+		Data:  sampleData,
+		Topic: "",
+	}
+	err := handler(msg)
+	if err != nil {
+		return false
+	}
+	return true
+}
+
 // Subscribe to the mqtt pub sub topic.
 func (m *mqttPubSub) Subscribe(req pubsub.SubscribeRequest, handler func(msg *pubsub.NewMessage) error) error {
 	// initial subscription
@@ -159,20 +175,27 @@ func (m *mqttPubSub) Subscribe(req pubsub.SubscribeRequest, handler func(msg *pu
 		return fmt.Errorf("mqtt error from subscribe: %v", err)
 	}
 
-	go func(mps *mqttPubSub) {
+	go func(mps *mqttPubSub, handler func(msg *pubsub.NewMessage) error) {
 		timer := time.NewTicker(defaultWait)
 		defer timer.Stop()
 		for {
 			select {
 			case <-timer.C:
-				if !mps.clientSub.IsConnected() {
+				if !mps.clientSub.IsConnected() && mps.isHandlerReady(handler) {
 					mps.logger.Debug("connecting for subscription")
-					mps.clientSub, _ = mps.connect(clientIDSub)
-					mps.subscribeHandler(req, handler)
+					mps.clientSub, err = mps.connect(clientIDSub)
+					if err != nil {
+						continue
+					}
+					if err = mps.subscribeHandler(req, handler); err != nil {
+						mps.logger.Debugf("error creating subscribe handler: %v", err)
+						mps.clientSub.Disconnect(0)
+						continue
+					}
 				}
 			}
 		}
-	}(m)
+	}(m, handler)
 
 	return nil
 }
