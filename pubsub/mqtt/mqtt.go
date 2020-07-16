@@ -142,7 +142,8 @@ func (m *mqttPubSub) Init(metadata pubsub.Metadata) error {
 	producerClientID := fmt.Sprintf("%s-producer", m.metadata.clientID)
 	p, err := m.connect(producerClientID)
 	if err != nil {
-		return err
+		m.logger.Warn("mqtt message bus initialization failed")
+		return nil
 	}
 
 	m.producer = p
@@ -154,6 +155,14 @@ func (m *mqttPubSub) Init(metadata pubsub.Metadata) error {
 
 // Publish the topic to mqtt pub sub.
 func (m *mqttPubSub) Publish(req *pubsub.PublishRequest) error {
+	var err error
+	if m.producer == nil || !m.producer.IsConnected() {
+		producerClientID := fmt.Sprintf("%s-producer", m.metadata.clientID)
+		m.producer, err = m.connect(producerClientID)
+		if err != nil {
+			return err
+		}
+	}
 	m.logger.Debugf("mqtt publishing topic %s with data: %v", req.Topic, req.Data)
 
 	token := m.producer.Publish(req.Topic, m.metadata.qos, m.metadata.retain, req.Data)
@@ -170,6 +179,7 @@ func (m *mqttPubSub) subscribeHandler(req pubsub.SubscribeRequest, handler func(
 			m.consumer.Disconnect(0)
 		}
 	}
+
 	token := m.consumer.SubscribeMultiple(m.topics, registerHandler)
 	if err := token.Error(); err != nil {
 		return err
@@ -185,8 +195,7 @@ func (m *mqttPubSub) isHandlerReady(handler func(msg *pubsub.NewMessage) error) 
 		Data:  sampleData,
 		Topic: "",
 	}
-	err := handler(msg)
-	if err != nil {
+	if err := handler(msg); err != nil {
 		return false
 	}
 	return true
@@ -215,24 +224,23 @@ func (m *mqttPubSub) Subscribe(req pubsub.SubscribeRequest, handler func(msg *pu
 	m.cancel = cancel
 
 	go func(mps *mqttPubSub, handler func(msg *pubsub.NewMessage) error) {
-		timer := time.NewTicker(defaultWait)
-		defer timer.Stop()
+		ticker := time.NewTicker(defaultWait)
+		defer ticker.Stop()
 		for {
 			select {
-			case <-timer.C:
-				if !mps.consumer.IsConnected() && mps.isHandlerReady(handler) {
+			case <-ticker.C:
+				if (mps.consumer == nil || !mps.consumer.IsConnected()) && mps.isHandlerReady(handler) {
 					mps.logger.Debug("connecting for subscription")
 					mps.consumer, err = mps.connect(consumerClientID)
 					if err != nil {
 						continue
 					}
 					if err = mps.subscribeHandler(req, handler); err != nil {
-						mps.logger.Debugf("error creating subscribe handler: %v", err)
+						mps.logger.Warnf("error creating subscribe handler: %v", err)
 						mps.consumer.Disconnect(0)
-						continue
 					}
 				}
-			case <- ctx.Done():
+			case <-ctx.Done():
 				return
 			}
 		}
