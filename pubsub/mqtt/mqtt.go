@@ -113,7 +113,8 @@ func (m *mqttPubSub) Init(metadata pubsub.Metadata) error {
 
 	clientP, err := m.connect(clientIDPub)
 	if err != nil {
-		return err
+		m.logger.Warn("mqtt message bus initialization failed")
+		return nil
 	}
 
 	m.clientPub = clientP
@@ -124,6 +125,13 @@ func (m *mqttPubSub) Init(metadata pubsub.Metadata) error {
 
 // Publish the topic to mqtt pub sub.
 func (m *mqttPubSub) Publish(req *pubsub.PublishRequest) error {
+	var err error
+	if m.clientPub == nil || !m.clientPub.IsConnected() {
+		m.clientPub, err = m.connect(clientIDPub)
+		if err != nil {
+			return err
+		}
+	}
 	m.logger.Debugf("mqtt publishing topic %s with data: %v", req.Topic, req.Data)
 
 	token := m.clientPub.Publish(req.Topic, m.metadata.qos, m.metadata.retain, req.Data)
@@ -140,6 +148,7 @@ func (m *mqttPubSub) subscribeHandler(req pubsub.SubscribeRequest, handler func(
 			m.clientSub.Disconnect(0)
 		}
 	}
+
 	token := m.clientSub.Subscribe(req.Topic, m.metadata.qos, registerHandler)
 	if err := token.Error(); err != nil {
 		return err
@@ -155,8 +164,7 @@ func (m *mqttPubSub) isHandlerReady(handler func(msg *pubsub.NewMessage) error) 
 		Data:  sampleData,
 		Topic: "",
 	}
-	err := handler(msg)
-	if err != nil {
+	if err := handler(msg); err != nil {
 		return false
 	}
 	return true
@@ -164,34 +172,22 @@ func (m *mqttPubSub) isHandlerReady(handler func(msg *pubsub.NewMessage) error) 
 
 // Subscribe to the mqtt pub sub topic.
 func (m *mqttPubSub) Subscribe(req pubsub.SubscribeRequest, handler func(msg *pubsub.NewMessage) error) error {
-	// initial subscription
 	var err error
-	m.clientSub, err = m.connect(clientIDSub)
-	if err != nil {
-		return err
-	}
-	err = m.subscribeHandler(req, handler)
-	if err != nil {
-		return fmt.Errorf("mqtt error from subscribe: %v", err)
-	}
-
 	go func(mps *mqttPubSub, handler func(msg *pubsub.NewMessage) error) {
 		timer := time.NewTicker(defaultWait)
 		defer timer.Stop()
-		for {
-			select {
-			case <-timer.C:
-				if !mps.clientSub.IsConnected() && mps.isHandlerReady(handler) {
-					mps.logger.Debug("connecting for subscription")
-					mps.clientSub, err = mps.connect(clientIDSub)
-					if err != nil {
-						continue
-					}
-					if err = mps.subscribeHandler(req, handler); err != nil {
-						mps.logger.Debugf("error creating subscribe handler: %v", err)
-						mps.clientSub.Disconnect(0)
-						continue
-					}
+		ticker := time.NewTicker(defaultWait)
+		defer ticker.Stop()
+		for ; true; <-ticker.C {
+			if (mps.clientSub == nil || !mps.clientSub.IsConnected()) && mps.isHandlerReady(handler) {
+				mps.logger.Debug("connecting for subscription")
+				mps.clientSub, err = mps.connect(clientIDSub)
+				if err != nil {
+					continue
+				}
+				if err = mps.subscribeHandler(req, handler); err != nil {
+					mps.logger.Warnf("error creating subscribe handler: %v", err)
+					mps.clientSub.Disconnect(0)
 				}
 			}
 		}
