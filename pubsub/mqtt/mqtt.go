@@ -17,11 +17,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/dapr/components-contrib/pubsub"
 	"github.com/dapr/dapr/pkg/logger"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/google/uuid"
 )
 
 const (
@@ -63,6 +62,7 @@ func NewMQTTPubSub(logger logger.Logger) pubsub.PubSub {
 // isValidPEM validates the provided input has PEM formatted block.
 func isValidPEM(val string) bool {
 	block, _ := pem.Decode([]byte(val))
+
 	return block != nil
 }
 
@@ -151,6 +151,7 @@ func (m *mqttPubSub) Init(metadata pubsub.Metadata) error {
 	m.topics = make(map[string]byte)
 
 	m.logger.Debug("mqtt message bus initialization complete")
+
 	return nil
 }
 
@@ -170,6 +171,7 @@ func (m *mqttPubSub) Publish(req *pubsub.PublishRequest) error {
 	if !token.WaitTimeout(defaultWait) || token.Error() != nil {
 		return fmt.Errorf("mqtt error from publish: %v", token.Error())
 	}
+
 	return nil
 }
 
@@ -265,6 +267,7 @@ func (m *mqttPubSub) connect(clientID string) (mqtt.Client, error) {
 	if err := token.Error(); err != nil {
 		return nil, err
 	}
+
 	return client, nil
 }
 
@@ -275,6 +278,7 @@ func (m *mqttPubSub) newTLSConfig() *tls.Config {
 		cert, err := tls.X509KeyPair([]byte(m.metadata.clientCert), []byte(m.metadata.clientKey))
 		if err != nil {
 			m.logger.Warnf("unable to load client certificate and key pair. Err: %v", err)
+
 			return tlsConfig
 		}
 		tlsConfig.Certificates = []tls.Certificate{cert}
@@ -300,5 +304,6 @@ func (m *mqttPubSub) createClientOptions(uri *url.URL, clientID string) *mqtt.Cl
 	opts.SetPassword(password)
 	// tls config
 	opts.SetTLSConfig(m.newTLSConfig())
+
 	return opts
 }
