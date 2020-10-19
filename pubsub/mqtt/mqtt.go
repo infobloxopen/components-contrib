@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -163,7 +164,7 @@ func (m *mqttPubSub) Publish(req *pubsub.PublishRequest) error {
 			return err
 		}
 	}
-	m.logger.Debugf("mqtt publishing topic %s with data: %v", req.Topic, req.Data)
+	//m.logger.Debugf("mqtt publishing topic %s with data: %v", req.Topic, req.Data)
 
 	token := m.producer.Publish(req.Topic, m.metadata.qos, m.metadata.retain, req.Data)
 	if !token.WaitTimeout(defaultWait) || token.Error() != nil {
@@ -189,7 +190,7 @@ func (m *mqttPubSub) subscribeHandler(req pubsub.SubscribeRequest, handler func(
 
 // isHandlerReady checks if the subscribe grpc handler is ready.
 func (m *mqttPubSub) isHandlerReady(handler func(msg *pubsub.NewMessage) error) bool {
-	sampleCloudEvent := pubsub.NewCloudEventsEnvelope("validate", "", "", "", "", "", nil)
+	sampleCloudEvent := pubsub.NewCloudEventsEnvelope("", "", "", "", "", "", nil)
 	sampleData, _ := json.Marshal(sampleCloudEvent)
 	msg := &pubsub.NewMessage{
 		Data:  sampleData,
@@ -203,22 +204,20 @@ func (m *mqttPubSub) isHandlerReady(handler func(msg *pubsub.NewMessage) error) 
 
 // Subscribe to the mqtt pub sub topic.
 func (m *mqttPubSub) Subscribe(req pubsub.SubscribeRequest, handler func(msg *pubsub.NewMessage) error) error {
+	// mqtt broker allows only one connection at a given time from a clientID.
+	consumerClientID := fmt.Sprintf("%s-consumer", m.metadata.clientID)
+
 	m.topics[req.Topic] = m.metadata.qos
 
+	var err error
+	connCreated := make(chan bool, 1)
+	var once sync.Once
 	// reset synchronization
 	if m.consumer != nil {
 		m.logger.Warnf("re-initializing the subscriber")
 		m.cancel()
 		m.consumer.Disconnect(0)
 	}
-
-	// mqtt broker allows only one connection at a given time from a clientID.
-	consumerClientID := fmt.Sprintf("%s-consumer", m.metadata.clientID)
-	c, err := m.connect(consumerClientID)
-	if err != nil {
-		return err
-	}
-	m.consumer = c
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
@@ -232,6 +231,9 @@ func (m *mqttPubSub) Subscribe(req pubsub.SubscribeRequest, handler func(msg *pu
 				if (mps.consumer == nil || !mps.consumer.IsConnected()) && mps.isHandlerReady(handler) {
 					mps.logger.Debug("connecting for subscription")
 					mps.consumer, err = mps.connect(consumerClientID)
+					once.Do(func() {
+						connCreated <- true
+					})
 					if err != nil {
 						continue
 					}
@@ -246,6 +248,7 @@ func (m *mqttPubSub) Subscribe(req pubsub.SubscribeRequest, handler func(msg *pu
 		}
 	}(m, handler)
 
+	<-connCreated // wait for connection creation
 	return nil
 }
 
