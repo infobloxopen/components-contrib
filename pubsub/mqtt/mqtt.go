@@ -314,3 +314,7 @@ func (m *mqttPubSub) Close() error {
 
 	return nil
 }
+
+func (m *mqttPubSub) Features() []pubsub.Feature {
+	return nil
+}
