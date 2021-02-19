@@ -192,7 +192,7 @@ func (m *mqttPubSub) subscribeHandler(req pubsub.SubscribeRequest, handler func(
 
 // isHandlerReady checks if the subscribe grpc handler is ready.
 func (m *mqttPubSub) isHandlerReady(handler func(msg *pubsub.NewMessage) error) bool {
-	sampleCloudEvent := pubsub.NewCloudEventsEnvelope("", "", "", "", "", "", nil)
+	sampleCloudEvent := pubsub.NewCloudEventsEnvelope("", "", "", "", "", "", "", nil, "")
 	sampleData, _ := json.Marshal(sampleCloudEvent)
 	msg := &pubsub.NewMessage{
 		Data:  sampleData,
