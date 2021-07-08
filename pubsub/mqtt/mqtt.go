@@ -209,6 +209,9 @@ func (m *mqttPubSub) Subscribe(req pubsub.SubscribeRequest, handler func(msg *pu
 	// mqtt broker allows only one connection at a given time from a clientID.
 	consumerClientID := fmt.Sprintf("%s-consumer", m.metadata.clientID)
 
+	if len(m.topics) == 0 {
+		m.topics = make(map[string]byte)
+	}
 	m.topics[req.Topic] = m.metadata.qos
 
 	var err error
